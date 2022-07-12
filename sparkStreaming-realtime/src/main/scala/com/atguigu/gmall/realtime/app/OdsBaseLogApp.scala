@@ -2,12 +2,16 @@ package com.atguigu.gmall.realtime.app
 
 import com.alibaba.fastjson.serializer.SerializeConfig
 import com.alibaba.fastjson.{JSON, JSONObject}
-import com.atguigu.gmall.realtime.bean.{PageActionLog, PageDisplayLog, PageLog}
-import com.atguigu.gmall.realtime.util.MyKafkaUtils
+import com.atguigu.gmall.realtime.bean.{PageActionLog, PageDisplayLog, PageLog, StartLog}
+import com.atguigu.gmall.realtime.util.{MyKafkaUtils, MyOffsetUtils}
 import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
 import org.apache.spark.streaming.dstream.{DStream, InputDStream}
+import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
+
+import java.lang
 
 /**
  * @author sxr
@@ -42,21 +46,37 @@ object OdsBaseLogApp {
     //2.从kafka消费数据
     val topicName: String = "ODS_BASE_LOG_1018"
     val groupId: String = "ODS_BASE_LOG_GROUP"
-    val KafkaDStream: InputDStream[ConsumerRecord[String, String]] =
-          MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId)
 
-//    KafkaDStream.print(100)
+    // TODO   从redis中读取offset，指定offset进行消费
+    val offsets: Map[TopicPartition, Long] = MyOffsetUtils.readOffset(topicName, groupId)
+    var KafkaDStream: InputDStream[ConsumerRecord[String, String]] = null
+    if (offsets!=null && offsets.nonEmpty){
+      //指定offset进行消费
+       KafkaDStream = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId,offsets)
+    }else{
+      //默认的offset进行消费
+      KafkaDStream = MyKafkaUtils.getKafkaDStream(ssc, topicName, groupId)
+    }
+
+    // TODO 补充：从当前消费到的数据中提取offset，不对流中的数据做任何处理
+    var offsetRanges: Array[OffsetRange] = null
+    val offsetRangesDStream: DStream[ConsumerRecord[String, String]] = KafkaDStream.transform(
+      rdd => {
+        offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+        rdd
+      }
+    )
 
 //    3.处理数据
 //       3.1转换数据结构
-val jsonObjDStream: DStream[JSONObject] = KafkaDStream.map (
+val jsonObjDStream: DStream[JSONObject] = offsetRangesDStream.map (
   ConsumerRecord => {
     val log: String = ConsumerRecord.value()
     val jSONObject: JSONObject = JSON.parseObject(log)
     jSONObject
   }
 )
-    jsonObjDStream.print(1000)
+//   jsonObjDStream.print(1000)
 
     ///3.2分流 ：将数据拆分到不同的主题中
     val DWD_PAGE_LOG_TOPIC :String = "DWD_PAGE_LOG_TOPIC"          //页面访问
@@ -93,6 +113,7 @@ val jsonObjDStream: DStream[JSONObject] = KafkaDStream.map (
               val vc: String = commontObj.getString("vc")
               val ba: String = commontObj.getString("ba")
               val ts: Long = commontObj.getLong("ts") //时间戳
+
               //页面数据
               val pageObj: JSONObject = JSONObject.getJSONObject("page")
               if(pageObj!=null){
@@ -161,12 +182,34 @@ val jsonObjDStream: DStream[JSONObject] = KafkaDStream.map (
                   }
                 }
               }
+
               //启动数据
+              val startObj: JSONObject = JSONObject.getJSONObject("start")
+              if(startObj!=null){
+                val entry: String = startObj.getString("entry")
+                val open_ad_skip_ms: Long = startObj.getLong("open_ad_skip_ms")
+                val open_ad_ms: Long = startObj.getLong("open_ad_ms")
+                val loading_time: Long = startObj.getLong("loading_time")
+                val open_ad_id: String = startObj.getString("open_ad_id")
+
+                //封装到对象
+                val startLog: StartLog = StartLog(mid, uid, ar, ch, is_new, md, os, vc, ba, entry, open_ad_id, loading_time, open_ad_ms, open_ad_skip_ms, ts)
+                // 发送到 DWD_START_LOG_TOPIC
+                MyKafkaUtils.send(
+                  DWD_START_LOG_TOPIC,
+                  JSON.toJSONString(startLog,new SerializeConfig(true))
+                )
+              }
+
             }
+            //C : 算子(foreach)里面 : Executor端执行, 每批次每条数据执行一次.
           }
         )
+        //B: foreachRDD里面， 算子(foreach)外面:  Driver端执行. 每批次执行一次.
+        MyOffsetUtils.saveOffset(topicName,groupId,offsetRanges)
       }
     )
+    //A: foreachRDD外面: Driver端执行. 程序启动的时候执行一次。
 
     ssc.start()
     ssc.awaitTermination()
