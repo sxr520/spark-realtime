@@ -26,4 +26,5 @@ case class PageDisplayLog(
                            display_order:String ,
                            display_pos_id:String,
                            ts:Long,
-                         ){}
+                         ){
+}

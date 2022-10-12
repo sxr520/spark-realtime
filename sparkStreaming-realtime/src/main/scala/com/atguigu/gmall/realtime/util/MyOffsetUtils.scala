@@ -3,7 +3,6 @@ package com.atguigu.gmall.realtime.util
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.streaming.kafka010.OffsetRange
 import redis.clients.jedis.Jedis
-
 import java.util
 import scala.collection.mutable
 

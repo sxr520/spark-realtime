@@ -21,5 +21,4 @@ case class StartLog(
                      open_ad_skip_ms:Long,
                      ts:Long
                    ){
-
 }

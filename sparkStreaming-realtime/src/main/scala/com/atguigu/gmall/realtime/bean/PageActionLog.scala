@@ -24,4 +24,5 @@ case class PageActionLog(
                           action_item:String,
                           action_item_type:String,
                           ts:Long
-                        ){}
+                        ){
+}
